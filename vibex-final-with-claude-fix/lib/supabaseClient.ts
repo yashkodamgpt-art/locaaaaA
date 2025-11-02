@@ -23,22 +23,30 @@ const clearStaleSessionData = () => {
 };
 
 // Function to check session validity and clear if necessary
-export const validateAndCleanSession = async () => {
-    try {
-        const { data: { session }, error } = await supabase.auth.getSession();
-        
-        // If there's an error fetching the session or the session is null,
-        // it might be stale or corrupted.
-        if (error || !session) {
+export const validateAndCleanSession = () => {
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith('sb-') && key.endsWith('-auth-token')) {
+      const item = localStorage.getItem(key);
+      if (item) {
+        try {
+          const session = JSON.parse(item);
+          const isExpired = session.expires_at && session.expires_at < Date.now() / 1000;
+          const isUnauthenticated = !session.user || session.user.aud !== 'authenticated';
+
+          if (isExpired || isUnauthenticated) {
             console.warn('⚠️ Stale or invalid session detected. Cleaning up.');
-            await supabase.auth.signOut({ scope: 'local' }); // Clears local storage for the client
-            clearStaleSessionData(); // Extra cleanup just in case
+            localStorage.removeItem(key);
+            i--; // Decrement i because removeItem will shift indices
+          }
+        } catch (e) {
+          console.error('🚨 Error parsing session data, removing item:', e);
+          localStorage.removeItem(key);
+          i--; // Decrement i because removeItem will shift indices
         }
-    } catch (e) {
-        console.error('🚨 Error validating session, forcing cleanup:', e);
-        await supabase.auth.signOut({ scope: 'local' });
-        clearStaleSessionData();
+      }
     }
+  }
 };
 
 // Refresh session when app becomes visible
