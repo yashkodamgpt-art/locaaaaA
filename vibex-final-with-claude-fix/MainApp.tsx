@@ -35,8 +35,28 @@ const MainApp: React.FC<MainAppProps> = ({ user, onLogout, onProfileUpdate }) =>
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [viewedUser, setViewedUser] = useState<User | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [isProfileQuickViewOpen, setIsProfileQuickViewOpen] = useState(false);
   const mapViewRef = useRef<MapViewRef>(null);
+
+  useEffect(() => {
+    const handleOnline = () => {
+        setIsOnline(true);
+        setError(null);
+    };
+    const handleOffline = () => {
+        setIsOnline(false);
+        setError("You're offline. Some features may not work.");
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+        window.removeEventListener('online', handleOnline);
+        window.removeEventListener('offline', handleOffline);
+    };
+}, []);
 
   useEffect(() => {
     const fetchEvents = async () => {
@@ -111,6 +131,42 @@ const MainApp: React.FC<MainAppProps> = ({ user, onLogout, onProfileUpdate }) =>
     };
   }, [isChatVisible, activeVibe]);
 
+// Subscribe to changes in the active vibe
+useEffect(() => {
+    if (!activeVibe) return;
+
+    const eventSubscription = supabase
+        .channel(`event:${activeVibe.id}`)
+        .on(
+            'postgres_changes',
+            {
+                event: 'UPDATE',
+                schema: 'public',
+                table: 'events',
+                filter: `id=eq.${activeVibe.id}`
+            },
+            (payload) => {
+                const updatedEvent = payload.new as Event;
+
+                // If event is closed or user is no longer in participants
+                if (updatedEvent.status === 'closed' || !updatedEvent.participants.includes(user.id)) {
+                    alert('This vibe has been closed by the creator.');
+                    setActiveVibe(null);
+                    setIsChatVisible(false);
+                }
+                // Update active vibe with new data
+                else {
+                    setActiveVibe(updatedEvent);
+                }
+            }
+        )
+        .subscribe();
+
+    return () => {
+        supabase.removeChannel(eventSubscription);
+    };
+}, [activeVibe, user.id]);
+
 
   const handleMapClickInCreateMode = (coords: { lat: number; lng: number }) => {
     if (activeVibe) {
@@ -153,12 +209,26 @@ const MainApp: React.FC<MainAppProps> = ({ user, onLogout, onProfileUpdate }) =>
   };
 
   const handleCloseEvent = async (eventId: number) => {
-    await supabase.from('events').update({ status: 'closed' }).eq('id', eventId);
-    if (activeVibe?.id === eventId) {
-      setActiveVibe(null);
-      setIsChatVisible(false);
+    // Update event status to closed and clear all participants
+    const { error } = await supabase
+        .from('events')
+        .update({
+            status: 'closed',
+            participants: [] // Clear all participants when closing
+        })
+        .eq('id', eventId);
+
+    if (error) {
+        console.error("Error closing event:", error);
+        return;
     }
-  };
+
+    // If the current user is in this vibe, remove them from local state
+    if (activeVibe?.id === eventId) {
+        setActiveVibe(null);
+        setIsChatVisible(false);
+    }
+};
 
   const handleExtendEvent = async (eventId: number) => {
       const event = events.find(e => e.id === eventId);
@@ -166,36 +236,63 @@ const MainApp: React.FC<MainAppProps> = ({ user, onLogout, onProfileUpdate }) =>
       await supabase.from('events').update({ duration: event.duration + 15 }).eq('id', eventId);
   };
 
-  const handleJoinVibe = async (eventId: number) => {
+const handleJoinVibe = async (eventId: number) => {
     if (activeVibe) {
         alert("You're already in a Vibe. Please leave it before joining another.");
         return;
     }
+
     const event = events.find(e => e.id === eventId);
     if (!event) return;
+
+    // Check if event is still active
+    if (event.status !== 'active') {
+        alert("This vibe is no longer active.");
+        return;
+    }
+
+    // Check if user is already in participants (shouldn't happen, but safety check)
+    if (event.participants.includes(user.id)) {
+        setActiveVibe(event);
+        return;
+    }
 
     const newParticipants = [...event.participants, user.id];
     const { data, error } = await supabase
         .from('events')
         .update({ participants: newParticipants })
         .eq('id', eventId)
+        .eq('status', 'active') // Only update if still active
         .select('*, creator:profiles(username)')
         .single();
         
-    if (error) console.error("Error joining vibe:", error);
-    else setActiveVibe(data as Event);
-  };
+    if (error) {
+        console.error("Error joining vibe:", error);
+        alert("Could not join this vibe. It may have been closed.");
+    } else if (data) {
+        setActiveVibe(data as Event);
+    }
+};
 
-  const handleLeaveVibe = async (eventId: number) => {
-      const event = events.find(e => e.id === eventId);
-      if (!event) return;
+const handleLeaveVibe = async (eventId: number) => {
+    const event = events.find(e => e.id === eventId);
+    if (!event) return;
 
-      const newParticipants = event.participants.filter(p => p !== user.id);
-      await supabase.from('events').update({ participants: newParticipants }).eq('id', eventId);
-      
-      setActiveVibe(null);
-      setIsChatVisible(false);
-  };
+    const newParticipants = event.participants.filter(p => p !== user.id);
+
+    const { error } = await supabase
+        .from('events')
+        .update({ participants: newParticipants })
+        .eq('id', eventId);
+
+    if (error) {
+        console.error("Error leaving vibe:", error);
+    }
+
+    setActiveVibe(null);
+    setIsChatVisible(false);
+    setChatMessages([]);
+};
 
   const handleSendMessage = async (text: string) => {
       if (!activeVibe) return;
