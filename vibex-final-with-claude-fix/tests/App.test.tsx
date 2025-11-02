@@ -155,4 +155,14 @@ describe('App', () => {
       expect(screen.getByText('Login')).toBeInTheDocument();
     });
   });
+  it('initializes the auth state only once', async () => {
+    render(<App />);
+    // Wait for the component to finish its initial loading sequence.
+    // When loading is false, it should show the Login component.
+    await screen.findByText('Login');
+
+    // At this point, all the initial useEffect shenanigans should be over.
+    // Now we can accurately check the call count.
+    expect(supabase.auth.getSession).toHaveBeenCalledTimes(1);
+  });
 });

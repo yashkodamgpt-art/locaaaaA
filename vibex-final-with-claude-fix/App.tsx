@@ -130,7 +130,7 @@ const App: React.FC = () => {
       subscription.unsubscribe();
       clearTimeout(timer);
     };
-  }, [loadUserProfile, initComplete]);
+  }, [loadUserProfile]);
   
   const handleLogout = async () => {
     console.log('👋 Logging out...');
